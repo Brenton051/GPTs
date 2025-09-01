@@ -70,26 +70,43 @@ async function kakaoCoord2Address(x, y) {
 // ---- 국토부: 건축물대장(제목부) ----
 async function molitGetBrTitle(params) {
   const base = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo";
-  // 1) 원문키 시도
+  const common = { _type: "json", numOfRows: 50, pageNo: 1, ...params };
+
+  // 1) 원문 키 시도
   try {
     const { data } = await axios.get(base, {
-      params: { serviceKey: MOLIT_KEY, _type: "json", numOfRows: 50, pageNo: 1, ...params },
+      params: { serviceKey: MOLIT_KEY, ...common },
       timeout: 15000,
     });
     const items = data?.response?.body?.items?.item;
     if (items) return Array.isArray(items) ? items : [items];
   } catch (e) {
-    // 계속 진행 (encoded 키로 재시도)
+    console.error("[MOLIT raw fail]", e?.response?.status, e?.response?.data);
   }
-  // 2) URL-encoded 키 시도
-  const enc = encodeURIComponent(MOLIT_KEY);
-  const { data } = await axios.get(base, {
-    params: { serviceKey: enc, _type: "json", numOfRows: 50, pageNo: 1, ...params },
-    timeout: 15000,
-  });
-  const items = data?.response?.body?.items?.item;
-  return items ? (Array.isArray(items) ? items : [items]) : [];
+
+  // 2) URL-encoded 키를 직접 붙여서 재시도 (이중 인코딩 방지)
+  try {
+    const enc = encodeURIComponent(MOLIT_KEY);
+    const url =
+      `${base}?serviceKey=${enc}` +
+      `&_type=json&numOfRows=${common.numOfRows}&pageNo=${common.pageNo}` +
+      `&sigunguCd=${common.sigunguCd}&bjdongCd=${common.bjdongCd}` +
+      `&platGbCd=${common.platGbCd}&bun=${common.bun}&ji=${common.ji}`;
+
+    const { data } = await axios.get(url, { timeout: 15000 });
+    const items = data?.response?.body?.items?.item;
+    if (items) return Array.isArray(items) ? items : [items];
+  } catch (e) {
+    console.error("[MOLIT encoded fail]", e?.response?.status, e?.response?.data);
+    throw new Error(
+      "MOLIT unauthorized or invalid params. " +
+      (e?.response?.data ? JSON.stringify(e.response.data) : e.message)
+    );
+  }
+
+  throw new Error("건축물대장 응답 없음/파싱 실패");
 }
+
 
 module.exports = async (req, res) => {
   try {
