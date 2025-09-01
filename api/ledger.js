@@ -4,8 +4,8 @@
 
 const axios = require("axios");
 
-const KAKAO_REST   = process.env.KAKAO_REST;       // 카카오 REST 키 (Decoding 필요 없음)
-const MOLIT_KEY    = process.env.MOLIT_KEY;        // 국토부 일반인증키(데이터포털 '일반/Decoding' 키)
+const KAKAO_REST   = process.env.KAKAO_REST;       // 카카오 REST 키
+const MOLIT_KEY    = process.env.MOLIT_KEY;        // 국토부 일반(Decoding) 키
 const PRIVATE_TOKEN= process.env.PRIVATE_TOKEN;    // 임의의 비밀 토큰
 
 // ---------- 유틸 ----------
@@ -45,10 +45,10 @@ async function kakaoCoord2Address(x, y) {
   });
   const a = data.documents?.[0]?.address;
   if (!a?.address_name) throw new Error("coord2address로 지번주소 획득 실패");
-  return a.address_name; // 지번 주소 문자열
+  return a.address_name;
 }
 
-// ---------- 카카오: 주소 문자열 → 법정동코드/본번/부번/산여부 (도로명만 있을 때 보강) ----------
+// ---------- 카카오: 주소 문자열 → 법정동코드/본번/부번/산여부 ----------
 async function kakaoAddressSearch(addressText) {
   const url = "https://dapi.kakao.com/v2/local/search/address.json";
   const { data } = await axios.get(url, {
@@ -60,10 +60,9 @@ async function kakaoAddressSearch(addressText) {
 }
 
 async function kakaoAddressParse(addressText, placeXY) {
-  // 1) 1차 주소검색
   const doc = await kakaoAddressSearch(addressText);
 
-  // 지번 주소가 정상인 일반 케이스
+  // 지번 주소가 정상으로 오는 일반 케이스
   const a = doc.address;
   if (a && has10(a.b_code)) {
     return {
@@ -75,7 +74,7 @@ async function kakaoAddressParse(addressText, placeXY) {
     };
   }
 
-  // 지번이 비어 있고 도로명만 있는 케이스 → 좌표로 지번주소 얻어서 재파싱
+  // 지번이 없고 도로명만 있는 케이스 → 좌표로 지번주소 얻어서 재파싱
   if (placeXY?.x && placeXY?.y) {
     const lotText = await kakaoCoord2Address(placeXY.x, placeXY.y);
     const doc2 = await kakaoAddressSearch(lotText);
@@ -94,12 +93,12 @@ async function kakaoAddressParse(addressText, placeXY) {
   throw new Error("카카오 주소→지번 파싱 실패(지번 미존재)");
 }
 
-// ---------- 국토부: 건축물대장(제목부) — 인코딩 이슈 안전 처리 ----------
+// ---------- 국토부: 건축물대장(제목부) ----------
 async function molitGetBrTitle(params) {
   const base = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo";
   const common = { _type:"json", numOfRows:50, pageNo:1, ...params };
 
-  // 1) 원문 키 (Decoding 키 권장)
+  // 1) 원문 키
   try {
     const { data } = await axios.get(base, {
       params: { serviceKey: MOLIT_KEY, ...common },
@@ -111,9 +110,9 @@ async function molitGetBrTitle(params) {
     console.error("[MOLIT raw fail]", e?.response?.status, e?.response?.data);
   }
 
-  // 2) URL-encoded 키를 직접 쿼리에 붙여 재시도(이중 인코딩 방지)
+  // 2) URL-encoded 키로 재시도
   try {
-    const enc = encodeURIComponent(MOLIT_KEY); // 한 번만 인코딩
+    const enc = encodeURIComponent(MOLIT_KEY);
     const url =
       `${base}?serviceKey=${enc}` +
       `&_type=json&numOfRows=${common.numOfRows}&pageNo=${common.pageNo}` +
@@ -139,7 +138,7 @@ module.exports = async (req, res) => {
     if (req.method !== "GET") return res.status(405).json({ ok:false, error:"method_not_allowed" });
     if (needEnv(res)) return;
 
-    // 간단 인증(선택)
+    // 간단 인증
     if (PRIVATE_TOKEN && req.headers["x-api-key"] !== PRIVATE_TOKEN) {
       return res.status(401).json({ ok:false, error:"unauthorized" });
     }
@@ -152,10 +151,10 @@ module.exports = async (req, res) => {
     // 1) 점포명 → 장소 1건
     const place = await kakaoPlace(store);
 
-    // 2) 주소 텍스트 확보(지번 우선 → 도로명 → 좌표 역지오코딩)
+    // 2) 주소 텍스트 확보
     const addrText = place.address_name || place.road_address_name || await kakaoCoord2Address(place.x, place.y);
 
-    // 3) 주소 → 국토부 파라미터 (좌표 전달하여 지번 보강)
+    // 3) 주소 → 국토부 파라미터
     const params = await kakaoAddressParse(addrText, { x: place.x, y: place.y });
 
     // 4) 국토부 조회
@@ -175,6 +174,11 @@ module.exports = async (req, res) => {
     });
   } catch (e) {
     const msg = e?.response?.data || e.message || "internal_error";
-    return res.status(500).json({ ok:false, error: msg });
+    const debug = req.query.debug === "1"; // debug 모드
+    return res.status(debug ? 200 : 500).json({
+      ok:false,
+      stage:"ledger_error",
+      error: typeof msg === "string" ? msg : JSON.stringify(msg)
+    });
   }
 };
