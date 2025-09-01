@@ -4,11 +4,11 @@
 
 const axios = require("axios");
 
-const KAKAO_REST = process.env.KAKAO_REST;         // 카카오 REST 키
-const MOLIT_KEY  = process.env.MOLIT_KEY;          // 국토부 일반인증키(원문)
+const KAKAO_REST = process.env.KAKAO_REST;         // 카카오 REST 키 (Decoding 필요 없음)
+const MOLIT_KEY  = process.env.MOLIT_KEY;          // 국토부 일반인증키(데이터포털 'Decoding(일반)' 키)
 const PRIVATE_TOKEN = process.env.PRIVATE_TOKEN;   // 임의의 비밀 토큰
 
-// ---- 유틸 ----
+// ---------- 유틸 ----------
 const z4 = (v) => (String(v ?? "").trim() === "" ? "0000" : String(v).padStart(4, "0"));
 const has10 = (s) => typeof s === "string" && s.length === 10;
 
@@ -23,7 +23,7 @@ function needEnv(res) {
   return false;
 }
 
-// ---- 카카오: 점포명 → 장소 1건 ----
+// ---------- 카카오: 점포명 → 장소 1건 ----------
 async function kakaoPlace(keyword) {
   const url = "https://dapi.kakao.com/v2/local/search/keyword.json";
   const { data } = await axios.get(url, {
@@ -35,12 +35,12 @@ async function kakaoPlace(keyword) {
   return data.documents[0];
 }
 
-// ---- 카카오: 주소 문자열 → 법정동코드/본번/부번/산여부 ----
+// ---------- 카카오: 주소 문자열 → 법정동코드/본번/부번/산여부 ----------
 async function kakaoAddressParse(addressText) {
   const url = "https://dapi.kakao.com/v2/local/search/address.json";
   const { data } = await axios.get(url, {
     headers: { Authorization: `KakaoAK ${KAKAO_REST}` },
-    params: { query: addressText, size: 1 },
+    params: { query: addressText, size: 1, analyze_type: "similar" },
     timeout: 10000,
   });
   const a = data.documents?.[0]?.address;
@@ -54,7 +54,7 @@ async function kakaoAddressParse(addressText) {
   };
 }
 
-// ---- 카카오: 좌표 → 지번주소 (address_name) ----
+// ---------- 카카오: 좌표 → 지번주소 ----------
 async function kakaoCoord2Address(x, y) {
   const url = "https://dapi.kakao.com/v2/local/geo/coord2address.json";
   const { data } = await axios.get(url, {
@@ -67,12 +67,12 @@ async function kakaoCoord2Address(x, y) {
   return a.address_name;
 }
 
-// ---- 국토부: 건축물대장(제목부) ----
+// ---------- 국토부: 건축물대장(제목부) - 인코딩 이슈 안전 처리 ----------
 async function molitGetBrTitle(params) {
   const base = "http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo";
   const common = { _type: "json", numOfRows: 50, pageNo: 1, ...params };
 
-  // 1) 원문 키 시도
+  // 1) 원문 키 (Decoding 키 권장)
   try {
     const { data } = await axios.get(base, {
       params: { serviceKey: MOLIT_KEY, ...common },
@@ -84,9 +84,9 @@ async function molitGetBrTitle(params) {
     console.error("[MOLIT raw fail]", e?.response?.status, e?.response?.data);
   }
 
-  // 2) URL-encoded 키를 직접 붙여서 재시도 (이중 인코딩 방지)
+  // 2) (예외 케이스) URL-encoded 키를 '직접 쿼리에 붙여' 재시도 (이중 인코딩 방지)
   try {
-    const enc = encodeURIComponent(MOLIT_KEY);
+    const enc = encodeURIComponent(MOLIT_KEY); // 한 번만 인코딩
     const url =
       `${base}?serviceKey=${enc}` +
       `&_type=json&numOfRows=${common.numOfRows}&pageNo=${common.pageNo}` +
@@ -107,26 +107,27 @@ async function molitGetBrTitle(params) {
   throw new Error("건축물대장 응답 없음/파싱 실패");
 }
 
-
+// ---------- 메인 핸들러 ----------
 module.exports = async (req, res) => {
   try {
     if (req.method !== "GET") return res.status(405).json({ ok: false, error: "method_not_allowed" });
     if (needEnv(res)) return;
 
-    // 간단 인증 (선택)
+    // 간단 인증(선택)
     if (PRIVATE_TOKEN && req.headers["x-api-key"] !== PRIVATE_TOKEN) {
       return res.status(401).json({ ok: false, error: "unauthorized" });
     }
 
     const store = (req.query.store || "").trim();
-    if (!store) return res.status(400).json({ ok: false, error: "store_query_required", hint: "/api/ledger?store=홈플러스 센텀시티점" });
+    if (!store) {
+      return res.status(400).json({ ok: false, error: "store_query_required", hint: "/api/ledger?store=홈플러스 센텀시티점" });
+    }
 
-    // 1) 점포명 → 장소
+    // 1) 점포명 → 장소 1건
     const place = await kakaoPlace(store);
 
-    // 2) 주소 텍스트 확보 (지번 우선, 없으면 도로명, 둘 다 없으면 좌표로 역지오코딩)
-    const addressText = place.address_name || place.road_address_name || null;
-    const addrText = addressText || await kakaoCoord2Address(place.x, place.y);
+    // 2) 주소 텍스트 확보(지번 우선 → 도로명 → 좌표 역지오코딩)
+    const addrText = place.address_name || place.road_address_name || await kakaoCoord2Address(place.x, place.y);
 
     // 3) 주소 → 국토부 파라미터
     const params = await kakaoAddressParse(addrText);
